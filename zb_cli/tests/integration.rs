@@ -27,14 +27,24 @@ impl TestEnv {
     }
 
     fn zb(&self, args: &[&str]) -> Output {
+        self.zb_with_env(args, &[])
+    }
+
+    fn zb_with_env(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let zb = env!("CARGO_BIN_EXE_zb");
-        Command::new(zb)
+        let mut command = Command::new(zb);
+        command
             .env("ZEROBREW_ROOT", self.root.path())
             // Use the short prefix so Mach-O patching stays within the 13-char limit,
-            // and prevent a host-level ZEROBREW_PREFIX from leaking into the test.
+            // and prevent host-level zerobrew variables from leaking into the test.
             .env("ZEROBREW_PREFIX", self.prefix())
             .env("ZEROBREW_AUTO_INIT", "true")
-            .args(args)
+            .env_remove("ZB_EXPLICIT_CATEGORY")
+            .args(args);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        command
             .output()
             .unwrap_or_else(|_| panic!("failed to execute {zb} command"))
     }
@@ -287,4 +297,26 @@ fn test_dependency_ownership_lifecycle() {
     assert_stdout_contains(&listed, "ffmpeg");
     assert_stdout_contains(&listed, "explicit");
     assert_stdout_contains(&listed, "implicit (required by");
+}
+
+#[test]
+#[ignore = "integration test"]
+fn test_explicit_category_lifecycle() {
+    let t = TestEnv::new();
+    let install = t.zb_with_env(
+        &["install", "jq"],
+        &[("ZB_EXPLICIT_CATEGORY", "experiment-a")],
+    );
+    assert_success(&install, "categorized install");
+
+    let listed = t.zb(&["list"]);
+    assert_success(&listed, "categorized list");
+    assert_stdout_contains(&listed, "explicit [experiment-a]");
+
+    assert_success(
+        &t.zb(&["uninstall", "--category", "experiment-a"]),
+        "category uninstall",
+    );
+    let listed = t.zb(&["list"]);
+    assert_stdout_contains(&listed, "No formulas installed");
 }

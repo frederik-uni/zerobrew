@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Persist explicit and implicit formula ownership, show direct dependents in `zb list`, protect required formulas from uninstall unless `--force` is used, and remove orphaned dependencies automatically or with `zb autoremove`.
+- Categorize explicit installs with `ZB_EXPLICIT_CATEGORY`, display categories in `zb list`, and remove a category with `zb uninstall --category <name>` while retaining shared dependencies.
 
 ### Changed
 - Bump MSRV to 1.96, required to build the latest `cargo-audit` in CI ([#393](https://github.com/lucasgelfond/zerobrew/pull/393))

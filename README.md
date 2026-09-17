@@ -76,6 +76,15 @@ zb gc                           # garbage collect unused store entries
 zbx jq --version                # run without linking
 ```
 
+Group temporary explicit installs with an environment category:
+
+```bash
+ZB_EXPLICIT_CATEGORY=experiment-a zb install ffmpeg imagemagick
+zb uninstall --category experiment-a
+```
+
+An unset or blank `ZB_EXPLICIT_CATEGORY` is the normal uncategorized default. Removing a category also removes dependencies used only by that category; dependencies shared with other installed formulas remain installed.
+
 ## Performance snapshot
 
 <div align="center">

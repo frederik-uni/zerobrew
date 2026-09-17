@@ -72,6 +72,15 @@ zb gc                           # 垃圾回收未使用的存储条目
 zbx jq --version                # 在不链接的情况下运行
 ```
 
+使用环境变量分类临时的显式安装：
+
+```bash
+ZB_EXPLICIT_CATEGORY=experiment-a zb install ffmpeg imagemagick
+zb uninstall --category experiment-a
+```
+
+未设置或为空的 `ZB_EXPLICIT_CATEGORY` 表示默认的未分类状态。删除分类时，只会同时删除该分类独占且不再需要的依赖；与其他已安装软件包共享的依赖会保留。
+
 ## 性能快照 (Performance snapshot)
 
 <div align="center">
