@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Persist explicit/implicit formula ownership and direct dependency edges so uninstall is safe, upgrades discard obsolete dependencies, orphaned implicit formulas are removed, and `zb list` explains ownership.
+**Goal:** Persist explicit/implicit formula ownership, optional explicit categories, and direct dependency edges so uninstall is safe, upgrades discard obsolete dependencies, orphaned implicit formulas are removed, and `zb list` explains ownership.
 
-**Architecture:** SQLite schema v2 stores an explicit bit on each installed formula plus normalized direct edges from dependent to dependency. Install and upgrade publish formula metadata through the existing per-formula transaction; uninstall validates reverse edges, removes requested formulas as a set, then invokes one shared recursive orphan sweeper. CLI commands are thin adapters over typed installer results.
+**Architecture:** SQLite schema v3 stores an explicit bit and nullable explicit category on each installed formula plus normalized direct edges from dependent to dependency. Install and upgrade publish ownership metadata through the existing per-formula transaction; uninstall validates reverse edges, removes requested formulas or categories as a set, then invokes one shared recursive orphan sweeper. CLI commands are thin adapters over typed installer results.
 
 **Tech Stack:** Rust 2024, rusqlite, clap, tokio, existing `zb_core`/`zb_io`/`zb_cli` workspace crates.
 
@@ -21,6 +21,9 @@
 - Cleanup removes only implicit formulas with zero installed direct dependents and repeats until stable.
 - Automatic cleanup runs only after a fully successful uninstall or upgrade batch.
 - No new third-party dependency is introduced.
+- `ZB_EXPLICIT_CATEGORY` is optional; missing, empty, or whitespace-only values mean the uncategorized default without a warning.
+- A direct install replaces the root's category, while implicit installs and upgrades preserve an existing category.
+- `zb uninstall --category <name>` is mutually exclusive with formula arguments and `--all`, and may be combined with `--force`.
 
 ---
 
@@ -694,4 +697,359 @@ Expected: no whitespace errors; only dependency-ownership implementation, tests,
 ```bash
 rtk git add README.md README.zh.md CHANGELOG.md zb_cli/tests/integration.rs
 rtk git commit -m "docs: explain dependency ownership cleanup"
+```
+
+---
+
+### Task 7: Schema v3 explicit categories
+
+**Files:**
+- Modify: `zb_io/src/storage/db.rs`
+- Modify: `zb_io/src/installer/install/bottle.rs`
+- Modify: `zb_io/src/installer/install/source.rs`
+- Modify: `zb_io/src/installer/install/outdated.rs`
+
+**Interfaces:**
+- Extends: `InstalledKeg` with `explicit_category: Option<String>`.
+- Extends: `InstallTransaction::record_install(name, version, store_key, explicit, explicit_category, dependencies)`.
+- Produces: `Database::list_explicit_in_category(category: &str) -> Result<Vec<String>, Error>`.
+
+- [ ] **Step 1: Add failing migration and category-update tests**
+
+Add storage tests that migrate a manually created schema-v2 database and assert the old row is uncategorized. Add behavior tests for category assignment, replacement, clearing, and implicit preservation:
+
+```rust
+#[test]
+fn direct_installs_replace_or_clear_category_while_dependencies_preserve_it() {
+    let mut db = Database::in_memory().unwrap();
+    let tx = db.transaction().unwrap();
+    tx.record_install("ffmpeg", "1", "a", true, Some("experiment-a"), &[]).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(db.get_installed("ffmpeg").unwrap().explicit_category.as_deref(), Some("experiment-a"));
+
+    let tx = db.transaction().unwrap();
+    tx.record_install("ffmpeg", "1", "a", false, None, &[]).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(db.get_installed("ffmpeg").unwrap().explicit_category.as_deref(), Some("experiment-a"));
+
+    let tx = db.transaction().unwrap();
+    tx.record_install("ffmpeg", "1", "a", true, None, &[]).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(db.get_installed("ffmpeg").unwrap().explicit_category, None);
+}
+```
+
+Also assert `list_explicit_in_category("experiment-a")` returns only explicit matching rows in alphabetical order.
+
+- [ ] **Step 2: Run storage tests and verify RED**
+
+```bash
+rtk cargo test -p zb_io storage::db::tests -- --nocapture
+```
+
+Expected: compilation fails because schema v3, the category field, category query, and expanded transaction signature do not exist.
+
+- [ ] **Step 3: Implement schema v3 and category-aware upsert**
+
+Increment `SCHEMA_VERSION` to 3 and migrate with:
+
+```sql
+ALTER TABLE installed_kegs ADD COLUMN explicit_category TEXT NULL;
+```
+
+Select the new column in every `InstalledKeg` query. Expand `record_install` and use this conflict clause:
+
+```sql
+explicit = installed_kegs.explicit OR excluded.explicit,
+explicit_category = CASE
+    WHEN excluded.explicit THEN excluded.explicit_category
+    ELSE installed_kegs.explicit_category
+END
+```
+
+Force `explicit_category` to null for a newly inserted implicit row. Implement the category query as:
+
+```sql
+SELECT name FROM installed_kegs
+WHERE explicit = 1 AND explicit_category = ?1
+ORDER BY name
+```
+
+- [ ] **Step 4: Update all transaction call sites**
+
+Pass `None` between the explicit flag and dependency slice at existing call sites. Formula and cask installation will pass a real category in Task 8; upgrade tests continue compiling with `None` until then.
+
+- [ ] **Step 5: Run storage and installer tests and verify GREEN**
+
+```bash
+rtk cargo test -p zb_io storage::db::tests -- --nocapture
+rtk cargo test -p zb_io installer::install -- --nocapture
+```
+
+Expected: all tests pass with schema version 3.
+
+- [ ] **Step 6: Commit Task 7**
+
+```bash
+rtk git add zb_io/src
+rtk git commit -m "feat: persist explicit install categories"
+```
+
+---
+
+### Task 8: Apply `ZB_EXPLICIT_CATEGORY` to direct installs
+
+**Files:**
+- Modify: `zb_cli/src/commands/install.rs`
+- Modify: `zb_io/src/installer/install/mod.rs`
+- Modify: `zb_io/src/installer/install/plan.rs`
+- Modify: `zb_io/src/installer/install/bottle.rs`
+- Modify: `zb_io/src/installer/install/source.rs`
+
+**Interfaces:**
+- Produces: `normalize_explicit_category(value: Option<&str>) -> Option<String>` in the install command module.
+- Extends: `PlannedInstall` with `explicit_category: Option<String>`.
+- Produces: `Installer::plan_with_options_and_category(names, build_from_source, explicit_category)`.
+- Produces: `Installer::install_casks_with_category(names, link, explicit_category)`.
+
+- [ ] **Step 1: Add failing normalization and plan tests**
+
+Use a pure helper so tests do not mutate the process environment concurrently:
+
+```rust
+#[test]
+fn category_normalization_treats_missing_and_blank_as_default() {
+    assert_eq!(normalize_explicit_category(None), None);
+    assert_eq!(normalize_explicit_category(Some("  ")), None);
+    assert_eq!(
+        normalize_explicit_category(Some("  experiment-a  ")),
+        Some("experiment-a".to_string())
+    );
+}
+```
+
+Extend plan tests to assert roots receive `Some("experiment-a")`, dependencies receive `None`, and direct replanning with `None` clears a stored category after execution.
+
+- [ ] **Step 2: Run focused tests and verify RED**
+
+```bash
+rtk cargo test -p zb_cli commands::install::tests -- --nocapture
+rtk cargo test -p zb_io installer::install::plan::tests -- --nocapture
+```
+
+Expected: compilation fails because normalization, category-aware planning, and the planned category field are absent.
+
+- [ ] **Step 3: Read and normalize the environment at the CLI boundary**
+
+At the start of `commands::install::execute`:
+
+```rust
+let explicit_category = normalize_explicit_category(
+    std::env::var("ZB_EXPLICIT_CATEGORY").ok().as_deref(),
+);
+```
+
+Pass `explicit_category.clone()` into formula planning and cask installation. Bundle installs already call this command and therefore inherit the same environment behavior.
+
+- [ ] **Step 4: Thread category only to explicit plan roots**
+
+Add `explicit_category` to `PlannedInstall`. Keep `plan_with_options` as an uncategorized compatibility wrapper and add:
+
+```rust
+pub async fn plan_with_options_and_category(
+    &self,
+    names: &[String],
+    build_from_source: bool,
+    explicit_category: Option<String>,
+) -> Result<InstallPlan, Error>
+```
+
+For each planned item, set the field to `explicit.then(|| explicit_category.clone()).flatten()`. Pass it to `record_install` from bottle/source transactions. Casks pass `true` and the supplied category.
+
+- [ ] **Step 5: Preserve category on upgrade**
+
+When upgrade overrides the root's explicit bit, also copy the stored category:
+
+```rust
+root.explicit = old.explicit;
+root.explicit_category = old.explicit_category.clone();
+```
+
+Add an upgrade assertion that a package categorized as `base` remains `base` after version replacement.
+
+- [ ] **Step 6: Run install and upgrade tests and verify GREEN**
+
+```bash
+rtk cargo test -p zb_cli commands::install::tests -- --nocapture
+rtk cargo test -p zb_io installer::install -- --nocapture
+```
+
+Expected: category normalization, assignment, clearing, dependency preservation, cask handling, and upgrade preservation pass.
+
+- [ ] **Step 7: Commit Task 8**
+
+```bash
+rtk git add zb_cli/src/commands/install.rs zb_io/src/installer/install
+rtk git commit -m "feat: categorize explicit installs from environment"
+```
+
+---
+
+### Task 9: Category removal and categorized list output
+
+**Files:**
+- Modify: `zb_cli/src/cli.rs`
+- Modify: `zb_cli/src/bin/zb.rs`
+- Modify: `zb_cli/src/commands/uninstall.rs`
+- Modify: `zb_cli/src/commands/list.rs`
+- Modify: `zb_io/src/installer/install/uninstall.rs`
+
+**Interfaces:**
+- Produces: `Commands::Uninstall { category: Option<String> }`.
+- Produces: `Installer::uninstall_category(category: &str, force: bool) -> Result<UninstallResult, Error>`.
+- Extends: `ownership_label(explicit, explicit_category, required_by)`.
+
+- [ ] **Step 1: Add failing parser, uninstall, and formatting tests**
+
+Parser tests assert `zb uninstall --category experiment-a` succeeds, while category plus a formula or `--all` fails. Installer tests create two categorized roots with shared and private dependencies and assert the private dependency is removed while the shared dependency survives. Add an external blocker case and its forced counterpart.
+
+List tests use literal expectations:
+
+```rust
+assert_eq!(
+    ownership_label(true, Some("experiment-a"), &["suite".into()]),
+    "explicit [experiment-a] (also required by suite)"
+);
+assert_eq!(ownership_label(true, None, &[]), "explicit");
+```
+
+- [ ] **Step 2: Run focused tests and verify RED**
+
+```bash
+rtk cargo test -p zb_cli cli::tests -- --nocapture
+rtk cargo test -p zb_cli commands::list::tests -- --nocapture
+rtk cargo test -p zb_io installer::install::uninstall::tests -- --nocapture
+```
+
+Expected: compilation or assertions fail because category parsing, selection, and rendering are absent.
+
+- [ ] **Step 3: Add mutually exclusive category parsing**
+
+Define uninstall arguments so formulas are required unless `all` or `category` is present, and conflict with both:
+
+```rust
+#[arg(
+    required_unless_present_any = ["all", "category"],
+    conflicts_with_all = ["all", "category"],
+    num_args = 1..
+)]
+formulas: Vec<String>,
+#[arg(long, conflicts_with = "all")]
+category: Option<String>,
+```
+
+Keep `force` compatible with category removal and pass the new field through `bin/zb.rs`.
+
+- [ ] **Step 4: Implement category selection as one uninstall set**
+
+The installer method trims the category, queries `list_explicit_in_category`, and delegates nonempty results to the existing batch operation:
+
+```rust
+pub fn uninstall_category(
+    &mut self,
+    category: &str,
+    force: bool,
+) -> Result<UninstallResult, Error> {
+    let names = self.db.list_explicit_in_category(category.trim())?;
+    if names.is_empty() {
+        return Ok(UninstallResult { requested: vec![], autoremoved: vec![] });
+    }
+    self.uninstall_many(&names, force)
+}
+```
+
+The CLI emits `No explicitly installed formulas in category '<trimmed>'.` for the empty result; otherwise it uses existing uninstall/autoremove reporting.
+
+- [ ] **Step 5: Render categories in `zb list`**
+
+Extend the formatter's match so categorized explicit rows render `explicit [category]`, followed by `(also required by ...)` when reverse owners exist. Implicit output remains unchanged.
+
+- [ ] **Step 6: Run CLI and uninstall tests and verify GREEN**
+
+```bash
+rtk cargo test -p zb_cli --lib --bins -- --nocapture
+rtk cargo test -p zb_io installer::install::uninstall::tests -- --nocapture
+```
+
+Expected: parsing, no-op reporting, safe/forced category removal, shared-dependency retention, and list labels pass.
+
+- [ ] **Step 7: Commit Task 9**
+
+```bash
+rtk git add zb_cli/src zb_io/src/installer/install/uninstall.rs
+rtk git commit -m "feat: uninstall explicit categories"
+```
+
+---
+
+### Task 10: Category documentation and final regression verification
+
+**Files:**
+- Modify: `README.md`
+- Modify: `README.zh.md`
+- Modify: `CHANGELOG.md`
+- Modify: `zb_cli/tests/integration.rs`
+
+**Interfaces:**
+- Consumes: Tasks 7–9.
+- Produces: documented environment and removal workflow plus end-to-end CLI coverage.
+
+- [ ] **Step 1: Extend the ignored lifecycle integration test**
+
+Set the category only for the install subprocess, then assert list output and category removal:
+
+```rust
+let install = t.zb_with_env(
+    &["install", "jq"],
+    &[("ZB_EXPLICIT_CATEGORY", "experiment-a")],
+);
+assert_success(&install, "categorized install");
+let listed = t.zb(&["list"]);
+assert_stdout_contains(&listed, "explicit [experiment-a]");
+assert_success(
+    &t.zb(&["uninstall", "--category", "experiment-a"]),
+    "category uninstall",
+);
+```
+
+Add `TestEnv::zb_with_env` beside `zb`, applying only the supplied environment pairs.
+
+- [ ] **Step 2: Update user documentation**
+
+Add this workflow in both READMEs and the Unreleased changelog:
+
+```text
+ZB_EXPLICIT_CATEGORY=experiment-a zb install ffmpeg
+zb uninstall --category experiment-a
+```
+
+Explain that an unset variable is the uncategorized default and that shared dependencies remain installed.
+
+- [ ] **Step 3: Run final verification**
+
+```bash
+rtk cargo fmt --check
+rtk cargo test --workspace
+rtk cargo clippy --workspace --all-targets -- -D warnings
+rtk git diff --check
+rtk git status --short
+```
+
+Expected: 0 failures, 0 lint warnings, and only category implementation/documentation changes pending.
+
+- [ ] **Step 4: Commit Task 10**
+
+```bash
+rtk git add README.md README.zh.md CHANGELOG.md zb_cli/tests/integration.rs
+rtk git commit -m "docs: explain explicit install categories"
 ```
