@@ -8,12 +8,19 @@ pub struct Database {
     conn: Connection,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledKeg {
     pub name: String,
     pub version: String,
     pub store_key: String,
     pub installed_at: i64,
+    pub explicit: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledFormula {
+    pub keg: InstalledKeg,
+    pub required_by: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,10 +38,11 @@ pub struct KegFileRecord {
 }
 
 impl Database {
-    const SCHEMA_VERSION: u32 = 1;
+    const SCHEMA_VERSION: u32 = 2;
 
     pub fn open(path: &Path) -> Result<Self, Error> {
         let conn = Connection::open(path).map_err(Error::store("failed to open database"))?;
+        Self::configure_connection(&conn)?;
         Self::migrate(&conn)?;
         Ok(Self { conn })
     }
@@ -42,6 +50,7 @@ impl Database {
     pub fn in_memory() -> Result<Self, Error> {
         let conn =
             Connection::open_in_memory().map_err(Error::store("failed to open in-memory db"))?;
+        Self::configure_connection(&conn)?;
         Self::migrate(&conn)?;
         Ok(Self { conn })
     }
@@ -51,6 +60,11 @@ impl Database {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(Error::store("failed to query schema version"))?;
         Ok(version)
+    }
+
+    fn configure_connection(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .map_err(Error::store("failed to configure database connection"))
     }
 
     fn set_schema_version(conn: &Connection, version: u32) -> Result<(), Error> {
@@ -89,6 +103,7 @@ impl Database {
     fn migrate_to_version(conn: &Connection, version: u32) -> Result<(), Error> {
         match version {
             1 => Self::migrate_to_v1(conn),
+            2 => Self::migrate_to_v2(conn),
             _ => Err(Error::StoreCorruption {
                 message: format!("unknown migration version {}", version),
             }),
@@ -124,6 +139,24 @@ impl Database {
         Ok(())
     }
 
+    fn migrate_to_v2(conn: &Connection) -> Result<(), Error> {
+        conn.execute_batch(
+            "ALTER TABLE installed_kegs
+                 ADD COLUMN explicit INTEGER NOT NULL DEFAULT 1
+                 CHECK (explicit IN (0, 1));
+             CREATE TABLE dependency_edges (
+                 dependent TEXT NOT NULL,
+                 dependency TEXT NOT NULL,
+                 PRIMARY KEY (dependent, dependency),
+                 FOREIGN KEY (dependent) REFERENCES installed_kegs(name) ON DELETE CASCADE
+             );
+             CREATE INDEX dependency_edges_dependency_idx
+                 ON dependency_edges(dependency);",
+        )
+        .map_err(Error::store("failed to migrate database to v2"))?;
+        Ok(())
+    }
+
     pub fn transaction(&mut self) -> Result<InstallTransaction<'_>, Error> {
         let tx = self
             .conn
@@ -136,7 +169,7 @@ impl Database {
     pub fn get_installed(&self, name: &str) -> Option<InstalledKeg> {
         self.conn
             .query_row(
-                "SELECT name, version, store_key, installed_at FROM installed_kegs WHERE name = ?1",
+                "SELECT name, version, store_key, installed_at, explicit FROM installed_kegs WHERE name = ?1",
                 params![name],
                 |row| {
                     Ok(InstalledKeg {
@@ -144,6 +177,7 @@ impl Database {
                         version: row.get(1)?,
                         store_key: row.get(2)?,
                         installed_at: row.get(3)?,
+                        explicit: row.get(4)?,
                     })
                 },
             )
@@ -154,7 +188,7 @@ impl Database {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT name, version, store_key, installed_at FROM installed_kegs ORDER BY name",
+                "SELECT name, version, store_key, installed_at, explicit FROM installed_kegs ORDER BY name",
             )
             .map_err(Error::store("failed to prepare statement"))?;
 
@@ -165,6 +199,7 @@ impl Database {
                     version: row.get(1)?,
                     store_key: row.get(2)?,
                     installed_at: row.get(3)?,
+                    explicit: row.get(4)?,
                 })
             })
             .map_err(Error::store("failed to query installed kegs"))?
@@ -172,6 +207,64 @@ impl Database {
             .map_err(Error::store("failed to collect results"))?;
 
         Ok(kegs)
+    }
+
+    pub fn installed_dependents(&self, dependency: &str) -> Result<Vec<String>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT dependency_edges.dependent
+                 FROM dependency_edges
+                 JOIN installed_kegs
+                   ON installed_kegs.name = dependency_edges.dependent
+                 WHERE dependency_edges.dependency = ?1
+                 ORDER BY dependency_edges.dependent",
+            )
+            .map_err(Error::store("failed to prepare dependent query"))?;
+        stmt.query_map(params![dependency], |row| row.get(0))
+            .map_err(Error::store("failed to query installed dependents"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Error::store("failed to collect installed dependents"))
+    }
+
+    pub fn list_orphans(&self) -> Result<Vec<InstalledKeg>, Error> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT k.name, k.version, k.store_key, k.installed_at, k.explicit
+                 FROM installed_kegs k
+                 WHERE k.explicit = 0
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM dependency_edges e
+                     JOIN installed_kegs parent ON parent.name = e.dependent
+                     WHERE e.dependency = k.name
+                   )
+                 ORDER BY k.name",
+            )
+            .map_err(Error::store("failed to prepare orphan query"))?;
+        stmt.query_map([], |row| {
+            Ok(InstalledKeg {
+                name: row.get(0)?,
+                version: row.get(1)?,
+                store_key: row.get(2)?,
+                installed_at: row.get(3)?,
+                explicit: row.get(4)?,
+            })
+        })
+        .map_err(Error::store("failed to query orphaned formulas"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Error::store("failed to collect orphaned formulas"))
+    }
+
+    pub fn list_installed_with_ownership(&self) -> Result<Vec<InstalledFormula>, Error> {
+        self.list_installed()?
+            .into_iter()
+            .map(|keg| {
+                let required_by = self.installed_dependents(&keg.name)?;
+                Ok(InstalledFormula { keg, required_by })
+            })
+            .collect()
     }
 
     pub fn get_store_refcount(&self, store_key: &str) -> i64 {
@@ -318,7 +411,14 @@ pub struct InstallTransaction<'a> {
 }
 
 impl<'a> InstallTransaction<'a> {
-    pub fn record_install(&self, name: &str, version: &str, store_key: &str) -> Result<(), Error> {
+    pub fn record_install(
+        &self,
+        name: &str,
+        version: &str,
+        store_key: &str,
+        explicit: bool,
+        dependencies: &[String],
+    ) -> Result<(), Error> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
@@ -336,13 +436,14 @@ impl<'a> InstallTransaction<'a> {
 
         self.tx
             .execute(
-                "INSERT INTO installed_kegs (name, version, store_key, installed_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO installed_kegs (name, version, store_key, installed_at, explicit)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(name) DO UPDATE SET
                      version = excluded.version,
                      store_key = excluded.store_key,
-                     installed_at = excluded.installed_at",
-                params![name, version, store_key, now],
+                     installed_at = excluded.installed_at,
+                     explicit = installed_kegs.explicit OR excluded.explicit",
+                params![name, version, store_key, now, explicit],
             )
             .map_err(Error::store("failed to record install"))?;
 
@@ -366,6 +467,22 @@ impl<'a> InstallTransaction<'a> {
                     )
                     .map_err(Error::store("failed to increment store ref"))?;
             }
+        }
+
+        self.tx
+            .execute(
+                "DELETE FROM dependency_edges WHERE dependent = ?1",
+                params![name],
+            )
+            .map_err(Error::store("failed to clear dependency edges"))?;
+        for dependency in dependencies {
+            self.tx
+                .execute(
+                    "INSERT OR IGNORE INTO dependency_edges (dependent, dependency)
+                     VALUES (?1, ?2)",
+                    params![name, dependency],
+                )
+                .map_err(Error::store("failed to record dependency edge"))?;
         }
 
         Ok(())
@@ -457,7 +574,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "abc123").unwrap();
+            tx.record_install("foo", "1.0.0", "abc123", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -474,7 +592,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "abc123").unwrap();
+            tx.record_install("foo", "1.0.0", "abc123", true, &[])
+                .unwrap();
             // Don't commit - transaction will be rolled back when dropped
         }
 
@@ -491,8 +610,10 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "shared123").unwrap();
-            tx.record_install("bar", "2.0.0", "shared123").unwrap();
+            tx.record_install("foo", "1.0.0", "shared123", true, &[])
+                .unwrap();
+            tx.record_install("bar", "2.0.0", "shared123", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -515,8 +636,10 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "key1").unwrap();
-            tx.record_install("bar", "2.0.0", "key2").unwrap();
+            tx.record_install("foo", "1.0.0", "key1", true, &[])
+                .unwrap();
+            tx.record_install("bar", "2.0.0", "key2", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -540,7 +663,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "abc123").unwrap();
+            tx.record_install("foo", "1.0.0", "abc123", true, &[])
+                .unwrap();
             tx.record_linked_file(
                 "foo",
                 "1.0.0",
@@ -567,7 +691,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "samekey").unwrap();
+            tx.record_install("foo", "1.0.0", "samekey", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -575,7 +700,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "samekey").unwrap();
+            tx.record_install("foo", "1.0.0", "samekey", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -588,7 +714,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "oldkey").unwrap();
+            tx.record_install("foo", "1.0.0", "oldkey", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -596,7 +723,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.1.0", "newkey").unwrap();
+            tx.record_install("foo", "1.1.0", "newkey", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -614,7 +742,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "gc_key").unwrap();
+            tx.record_install("foo", "1.0.0", "gc_key", true, &[])
+                .unwrap();
             tx.record_uninstall("foo").unwrap();
             tx.commit().unwrap();
         }
@@ -630,7 +759,8 @@ mod tests {
 
         {
             let tx = db.transaction().unwrap();
-            tx.record_install("foo", "1.0.0", "oldkey").unwrap();
+            tx.record_install("foo", "1.0.0", "oldkey", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -644,7 +774,9 @@ mod tests {
             .unwrap();
 
         let tx = db.transaction().unwrap();
-        let err = tx.record_install("foo", "1.1.0", "newkey").unwrap_err();
+        let err = tx
+            .record_install("foo", "1.1.0", "newkey", true, &[])
+            .unwrap_err();
         assert!(matches!(err, Error::StoreCorruption { .. }));
         assert!(
             err.to_string()
@@ -653,10 +785,10 @@ mod tests {
     }
 
     #[test]
-    fn new_database_starts_at_version_1() {
+    fn new_database_starts_at_current_version() {
         let db = Database::in_memory().expect("failed to create database");
         let version = Database::get_schema_version(&db.conn).expect("failed to get version");
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -665,7 +797,7 @@ mod tests {
         Database::migrate(&db.conn).expect("first migration failed");
         Database::migrate(&db.conn).expect("second migration failed");
         let version = Database::get_schema_version(&db.conn).expect("failed to get version");
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
     }
 
     #[test]
@@ -703,5 +835,109 @@ mod tests {
             .query_row("SELECT name FROM installed_kegs", [], |row| row.get(0))
             .expect("failed to query data");
         assert_eq!(name, "test");
+    }
+
+    #[test]
+    fn migration_v2_marks_existing_kegs_explicit() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let conn = Connection::open(tmp.path()).unwrap();
+        Database::migrate_to_v1(&conn).unwrap();
+        Database::set_schema_version(&conn, 1).unwrap();
+        conn.execute(
+            "INSERT INTO installed_kegs VALUES ('ffmpeg', '7.1', 'ffmpeg-key', 1)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let db = Database::open(tmp.path()).unwrap();
+        assert_eq!(Database::get_schema_version(&db.conn).unwrap(), 2);
+        assert!(db.get_installed("ffmpeg").unwrap().explicit);
+    }
+
+    #[test]
+    fn ownership_queries_handle_shared_and_recursive_dependencies() {
+        let mut db = Database::in_memory().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.record_install("ffmpeg", "7.1", "f", true, &["x264".into()])
+            .unwrap();
+        tx.record_install("vlc", "4.0", "v", true, &["x264".into()])
+            .unwrap();
+        tx.record_install("x264", "1", "x", false, &["nasm".into()])
+            .unwrap();
+        tx.record_install("nasm", "2", "n", false, &[]).unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(
+            db.installed_dependents("x264").unwrap(),
+            vec!["ffmpeg", "vlc"]
+        );
+        assert!(db.list_orphans().unwrap().is_empty());
+    }
+
+    #[test]
+    fn explicit_install_promotes_but_dependency_install_does_not_demote() {
+        let mut db = Database::in_memory().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.record_install("x264", "1", "x", false, &[]).unwrap();
+        tx.commit().unwrap();
+        assert!(!db.get_installed("x264").unwrap().explicit);
+
+        let tx = db.transaction().unwrap();
+        tx.record_install("x264", "1", "x", true, &[]).unwrap();
+        tx.commit().unwrap();
+        assert!(db.get_installed("x264").unwrap().explicit);
+
+        let tx = db.transaction().unwrap();
+        tx.record_install("x264", "1", "x", false, &[]).unwrap();
+        tx.commit().unwrap();
+        assert!(db.get_installed("x264").unwrap().explicit);
+    }
+
+    #[test]
+    fn replacing_edges_updates_reverse_owners_and_orphans() {
+        let mut db = Database::in_memory().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.record_install("app", "1", "a", true, &["olddep".into()])
+            .unwrap();
+        tx.record_install("olddep", "1", "o", false, &[]).unwrap();
+        tx.record_install("newdep", "1", "n", false, &[]).unwrap();
+        tx.commit().unwrap();
+
+        let tx = db.transaction().unwrap();
+        tx.record_install("app", "2", "a2", true, &["newdep".into()])
+            .unwrap();
+        tx.commit().unwrap();
+
+        assert!(db.installed_dependents("olddep").unwrap().is_empty());
+        assert_eq!(db.installed_dependents("newdep").unwrap(), vec!["app"]);
+        assert_eq!(
+            db.list_orphans()
+                .unwrap()
+                .into_iter()
+                .map(|keg| keg.name)
+                .collect::<Vec<_>>(),
+            vec!["olddep"]
+        );
+    }
+
+    #[test]
+    fn uninstalling_parent_deletes_outgoing_edges_but_forced_target_removal_keeps_incoming_edges() {
+        let mut db = Database::in_memory().unwrap();
+        let tx = db.transaction().unwrap();
+        tx.record_install("app", "1", "a", true, &["dep".into()])
+            .unwrap();
+        tx.record_install("dep", "1", "d", false, &[]).unwrap();
+        tx.commit().unwrap();
+
+        let tx = db.transaction().unwrap();
+        tx.record_uninstall("dep").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(db.installed_dependents("dep").unwrap(), vec!["app"]);
+
+        let tx = db.transaction().unwrap();
+        tx.record_uninstall("app").unwrap();
+        tx.commit().unwrap();
+        assert!(db.installed_dependents("dep").unwrap().is_empty());
     }
 }

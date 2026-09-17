@@ -3,5 +3,7 @@ pub mod db;
 pub mod store;
 
 pub use blob::{BlobCache, BlobWriter};
-pub use db::{Database, InstallTransaction, InstalledKeg, KegFileRecord, StoreRef};
+pub use db::{
+    Database, InstallTransaction, InstalledFormula, InstalledKeg, KegFileRecord, StoreRef,
+};
 pub use store::Store;

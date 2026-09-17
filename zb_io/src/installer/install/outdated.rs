@@ -246,7 +246,7 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("jq", "1.7.1", sha).unwrap();
+            tx.record_install("jq", "1.7.1", sha, true, &[]).unwrap();
             tx.commit().unwrap();
         }
 
@@ -268,7 +268,8 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("jq", "1.7.0", "old_sha256").unwrap();
+            tx.record_install("jq", "1.7.0", "old_sha256", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -303,7 +304,8 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("jq", "1.7.1", "source:jq:1.7.1").unwrap();
+            tx.record_install("jq", "1.7.1", "source:jq:1.7.1", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -327,7 +329,8 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("jq", "1.6", "source:jq:1.6").unwrap();
+            tx.record_install("jq", "1.6", "source:jq:1.6", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -362,8 +365,10 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("good", "1.0.0", "old_sha").unwrap();
-            tx.record_install("bad", "1.0.0", "old_sha").unwrap();
+            tx.record_install("good", "1.0.0", "old_sha", true, &[])
+                .unwrap();
+            tx.record_install("bad", "1.0.0", "old_sha", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -393,7 +398,8 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("nobottle", "1.0.0", "old_sha").unwrap();
+            tx.record_install("nobottle", "1.0.0", "old_sha", true, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
