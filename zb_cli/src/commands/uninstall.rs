@@ -7,8 +7,32 @@ pub fn execute(
     formulas: Vec<String>,
     force: bool,
     all: bool,
+    category: Option<String>,
     ui: &mut StdUi,
 ) -> Result<(), zb_core::Error> {
+    if let Some(category) = category {
+        let category = category.trim();
+        let result = installer.uninstall_category(category, force)?;
+        if result.requested.is_empty() {
+            ui.info(format!(
+                "No explicitly installed formulas in category '{category}'."
+            ))
+            .map_err(ui_error)?;
+            return Ok(());
+        }
+        ui.heading(format!(
+            "Uninstalled category {}: {}",
+            style(category).bold(),
+            result.requested.join(", ")
+        ))
+        .map_err(ui_error)?;
+        for name in result.autoremoved {
+            ui.info(format!("Removed unused dependency {name}"))
+                .map_err(ui_error)?;
+        }
+        return Ok(());
+    }
+
     let formulas = if all {
         let installed = installer.list_installed()?;
         if installed.is_empty() {

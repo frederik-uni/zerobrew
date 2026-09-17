@@ -74,6 +74,21 @@ impl Installer {
         Ok(removed)
     }
 
+    pub fn uninstall_category(
+        &mut self,
+        category: &str,
+        force: bool,
+    ) -> Result<UninstallResult, Error> {
+        let names = self.db.list_explicit_in_category(category.trim())?;
+        if names.is_empty() {
+            return Ok(UninstallResult {
+                requested: Vec::new(),
+                autoremoved: Vec::new(),
+            });
+        }
+        self.uninstall_many(&names, force)
+    }
+
     pub fn uninstall_by_version(&mut self, name: &str, version: &str) -> Result<(), Error> {
         self.remove_keg_artifacts(name, version)?;
 
@@ -246,6 +261,81 @@ mod tests {
         assert_eq!(result.requested, vec!["x264", "ffmpeg"]);
         assert!(result.autoremoved.is_empty());
         assert!(installer.list_installed().unwrap().is_empty());
+    }
+
+    #[test]
+    fn category_removal_keeps_dependencies_shared_with_another_category() {
+        let tmp = TempDir::new().unwrap();
+        let mut installer = installer_with_graph(
+            &tmp,
+            &[
+                ("experiment-a", true, &["private", "shared"]),
+                ("experiment-b", true, &["shared"]),
+                ("base", true, &["shared"]),
+                ("private", false, &[]),
+                ("shared", false, &[]),
+            ],
+        );
+        {
+            let tx = installer.db.transaction().unwrap();
+            tx.record_install(
+                "experiment-a",
+                "1.0.0",
+                "experiment-a",
+                true,
+                Some("experiment"),
+                &["private".into(), "shared".into()],
+            )
+            .unwrap();
+            tx.record_install(
+                "experiment-b",
+                "1.0.0",
+                "experiment-b",
+                true,
+                Some("experiment"),
+                &["shared".into()],
+            )
+            .unwrap();
+            tx.record_install(
+                "base",
+                "1.0.0",
+                "base",
+                true,
+                Some("base"),
+                &["shared".into()],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let result = installer.uninstall_category(" experiment ", false).unwrap();
+        assert_eq!(result.requested, vec!["experiment-a", "experiment-b"]);
+        assert_eq!(result.autoremoved, vec!["private"]);
+        assert!(installer.is_installed("base"));
+        assert!(installer.is_installed("shared"));
+    }
+
+    #[test]
+    fn category_removal_respects_external_blockers_unless_forced() {
+        let tmp = TempDir::new().unwrap();
+        let mut installer =
+            installer_with_graph(&tmp, &[("suite", true, &["tool"]), ("tool", true, &[])]);
+        {
+            let tx = installer.db.transaction().unwrap();
+            tx.record_install("tool", "1.0.0", "tool", true, Some("experiment"), &[])
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        assert!(matches!(
+            installer.uninstall_category("experiment", false),
+            Err(zb_core::Error::RequiredBy { .. })
+        ));
+        installer.uninstall_category("experiment", true).unwrap();
+        assert_eq!(
+            installer.db.installed_dependents("tool").unwrap(),
+            vec!["suite"]
+        );
     }
 
     #[tokio::test]

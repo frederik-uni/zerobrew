@@ -121,6 +121,26 @@ mod tests {
         let cli = Cli::try_parse_from(["zb", "autoremove"]).unwrap();
         assert!(matches!(cli.command, super::Commands::Autoremove));
     }
+
+    #[test]
+    fn uninstall_accepts_category_with_force() {
+        let cli = Cli::try_parse_from(["zb", "uninstall", "--category", "experiment-a", "--force"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Uninstall {
+                category: Some(category),
+                force: true,
+                ..
+            } if category == "experiment-a"
+        ));
+    }
+
+    #[test]
+    fn uninstall_category_conflicts_with_formulas_and_all() {
+        assert!(Cli::try_parse_from(["zb", "uninstall", "jq", "--category", "base"]).is_err());
+        assert!(Cli::try_parse_from(["zb", "uninstall", "--all", "--category", "base"]).is_err());
+    }
 }
 
 #[derive(Subcommand)]
@@ -141,7 +161,11 @@ pub enum Commands {
     },
     /// Uninstall formulas and casks
     Uninstall {
-        #[arg(required_unless_present = "all", num_args = 1..)]
+        #[arg(
+            required_unless_present_any = ["all", "category"],
+            conflicts_with_all = ["all", "category"],
+            num_args = 1..
+        )]
         formulas: Vec<String>,
         #[arg(
             long,
@@ -150,6 +174,8 @@ pub enum Commands {
         force: bool,
         #[arg(long, help = "Uninstall all installed packages")]
         all: bool,
+        #[arg(long, conflicts_with = "all", help = "Uninstall an explicit category")]
+        category: Option<String>,
     },
     /// Remove installed dependencies that are no longer required
     Autoremove,

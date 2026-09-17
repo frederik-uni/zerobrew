@@ -65,7 +65,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             formulas,
             force,
             all,
-        } => commands::uninstall::execute(&mut installer, formulas, force, all, &mut ui),
+            category,
+        } => commands::uninstall::execute(&mut installer, formulas, force, all, category, &mut ui),
         Commands::Autoremove => commands::autoremove::execute(&mut installer, &mut ui),
         Commands::Migrate { yes, force } => {
             commands::migrate::execute(&mut installer, yes, force, &mut ui).await
