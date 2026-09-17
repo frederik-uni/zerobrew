@@ -16,6 +16,8 @@ pub async fn execute(
     ui: &mut StdUi,
 ) -> Result<(), zb_core::Error> {
     let start = Instant::now();
+    let explicit_category =
+        normalize_explicit_category(std::env::var("ZB_EXPLICIT_CATEGORY").ok().as_deref());
     ui.heading(format!(
         "Installing {}...",
         style(formulas.join(", ")).bold()
@@ -44,7 +46,11 @@ pub async fn execute(
 
     if !normalized_names.is_empty() {
         let plan = match installer
-            .plan_with_options(&normalized_names, build_from_source)
+            .plan_with_options_and_category(
+                &normalized_names,
+                build_from_source,
+                explicit_category.clone(),
+            )
             .await
         {
             Ok(p) => p,
@@ -69,7 +75,9 @@ pub async fn execute(
             cask_names.len()
         ))
         .map_err(ui_error)?;
-        let result = installer.install_casks(&cask_names, !no_link).await?;
+        let result = installer
+            .install_casks_with_category(&cask_names, !no_link, explicit_category)
+            .await?;
         installed_count += result.installed;
     }
 
@@ -262,5 +270,27 @@ pub async fn execute_formula_plan(
 fn ui_error(err: std::io::Error) -> zb_core::Error {
     zb_core::Error::FileError {
         message: format!("failed to write CLI output: {err}"),
+    }
+}
+
+fn normalize_explicit_category(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|category| !category.is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_explicit_category;
+
+    #[test]
+    fn category_normalization_treats_missing_and_blank_as_default() {
+        assert_eq!(normalize_explicit_category(None), None);
+        assert_eq!(normalize_explicit_category(Some("  ")), None);
+        assert_eq!(
+            normalize_explicit_category(Some("  experiment-a  ")),
+            Some("experiment-a".to_string())
+        );
     }
 }

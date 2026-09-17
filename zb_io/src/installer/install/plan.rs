@@ -15,6 +15,16 @@ impl Installer {
         names: &[String],
         build_from_source: bool,
     ) -> Result<InstallPlan, Error> {
+        self.plan_with_options_and_category(names, build_from_source, None)
+            .await
+    }
+
+    pub async fn plan_with_options_and_category(
+        &self,
+        names: &[String],
+        build_from_source: bool,
+        explicit_category: Option<String>,
+    ) -> Result<InstallPlan, Error> {
         let formulas = self.fetch_all_formulas(names).await?;
         let ordered = zb_core::resolve_closure(names, &formulas)?;
         let explicit_roots: HashSet<&str> = names.iter().map(String::as_str).collect();
@@ -23,7 +33,14 @@ impl Installer {
         for install_name in ordered {
             let explicit = explicit_roots.contains(install_name.as_str());
             let formula = formulas.get(&install_name).cloned().unwrap();
-            items.push(self.plan_item(install_name, formula, build_from_source, explicit)?);
+            let category = explicit.then(|| explicit_category.clone()).flatten();
+            items.push(self.plan_item(
+                install_name,
+                formula,
+                build_from_source,
+                explicit,
+                category,
+            )?);
         }
 
         Ok(InstallPlan { items })
@@ -81,6 +98,7 @@ impl Installer {
                             formula,
                             build_from_source,
                             explicit,
+                            None,
                         ) {
                             Ok(item) => items.push(item),
                             Err(error) => failures.push(PlanFailure {
@@ -108,6 +126,7 @@ impl Installer {
         formula: Formula,
         build_from_source: bool,
         explicit: bool,
+        explicit_category: Option<String>,
     ) -> Result<PlannedInstall, Error> {
         let method = if build_from_source {
             match BuildPlan::from_formula(&formula, &self.prefix) {
@@ -140,6 +159,7 @@ impl Installer {
             formula,
             method,
             explicit,
+            explicit_category,
         })
     }
 
@@ -405,7 +425,11 @@ end
             root.join("locks"),
         );
         let plan = installer
-            .plan(&["hashicorp/tap/terraform".to_string()])
+            .plan_with_options_and_category(
+                &["hashicorp/tap/terraform".to_string()],
+                false,
+                Some("experiment-a".to_string()),
+            )
             .await
             .unwrap();
 
@@ -423,6 +447,15 @@ end
                 .unwrap()
                 .explicit
         );
+        assert_eq!(
+            plan.items
+                .iter()
+                .find(|item| item.install_name == "hashicorp/tap/terraform")
+                .unwrap()
+                .explicit_category
+                .as_deref(),
+            Some("experiment-a")
+        );
         assert!(
             !plan
                 .items
@@ -430,6 +463,14 @@ end
                 .find(|item| item.install_name == "go")
                 .unwrap()
                 .explicit
+        );
+        assert_eq!(
+            plan.items
+                .iter()
+                .find(|item| item.install_name == "go")
+                .unwrap()
+                .explicit_category,
+            None
         );
     }
 

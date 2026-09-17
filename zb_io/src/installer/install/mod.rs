@@ -60,6 +60,7 @@ pub struct PlannedInstall {
     pub formula: Formula,
     pub method: InstallMethod,
     pub explicit: bool,
+    pub explicit_category: Option<String>,
 }
 
 #[derive(Debug)]
@@ -268,12 +269,22 @@ impl Installer {
         names: &[String],
         link: bool,
     ) -> Result<ExecuteResult, Error> {
+        self.install_casks_with_category(names, link, None).await
+    }
+
+    pub async fn install_casks_with_category(
+        &mut self,
+        names: &[String],
+        link: bool,
+        explicit_category: Option<String>,
+    ) -> Result<ExecuteResult, Error> {
         let mut installed = 0usize;
         for name in names {
             let token = name
                 .strip_prefix("cask:")
                 .expect("install_casks expects cask: prefixed names");
-            self.install_single_cask(token, link).await?;
+            self.install_single_cask(token, link, explicit_category.as_deref())
+                .await?;
             installed += 1;
         }
         Ok(ExecuteResult { installed })
@@ -605,12 +616,19 @@ mod tests {
             root.join("locks"),
         );
 
-        installer
-            .install(&["mainpkg".to_string()], true)
+        let plan = installer
+            .plan_with_options_and_category(
+                &["mainpkg".to_string()],
+                false,
+                Some("experiment-a".to_string()),
+            )
             .await
             .unwrap();
+        installer.execute(plan, true).await.unwrap();
 
-        assert!(installer.db.get_installed("mainpkg").unwrap().explicit);
+        let mainpkg = installer.db.get_installed("mainpkg").unwrap();
+        assert!(mainpkg.explicit);
+        assert_eq!(mainpkg.explicit_category.as_deref(), Some("experiment-a"));
         assert!(!installer.db.get_installed("deplib").unwrap().explicit);
         assert_eq!(
             installer.db.installed_dependents("deplib").unwrap(),
@@ -621,7 +639,9 @@ mod tests {
             .install(&["deplib".to_string()], true)
             .await
             .unwrap();
-        assert!(installer.db.get_installed("deplib").unwrap().explicit);
+        let deplib = installer.db.get_installed("deplib").unwrap();
+        assert!(deplib.explicit);
+        assert_eq!(deplib.explicit_category, None);
     }
 
     #[tokio::test]

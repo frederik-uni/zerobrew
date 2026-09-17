@@ -92,7 +92,7 @@ impl Installer {
             &version,
             &store_key,
             item.explicit,
-            None,
+            item.explicit_category.as_deref(),
             &dependencies,
         ) {
             drop(tx);

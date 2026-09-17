@@ -55,7 +55,7 @@ impl Installer {
             &version,
             store_key,
             item.explicit,
-            None,
+            item.explicit_category.as_deref(),
             &dependencies,
         )
         .inspect_err(|_| {
@@ -230,6 +230,7 @@ impl Installer {
         &mut self,
         token: &str,
         link: bool,
+        explicit_category: Option<&str>,
     ) -> Result<(), Error> {
         let cask_json = self.api_client.get_cask(token).await?;
         let cask = resolve_cask(token, &cask_json)?;
@@ -275,7 +276,7 @@ impl Installer {
             &cask.version,
             &cask.sha256,
             true,
-            None,
+            explicit_category,
             &[],
         )?;
         for linked in &linked_files {

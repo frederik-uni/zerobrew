@@ -47,6 +47,7 @@ impl Installer {
             .await?;
         if let Some(root) = plan.items.iter_mut().find(|item| item.install_name == name) {
             root.explicit = old.explicit;
+            root.explicit_category = old.explicit_category.clone();
         }
 
         // Fetch new bottles before touching the old install — a download
@@ -636,14 +637,29 @@ mod tests {
         let mut installer = make_installer(&root, &prefix, &mock_server.uri());
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("app", "1.0.0", "old-app", true, None, &["olddep".into()])
-                .unwrap();
+            tx.record_install(
+                "app",
+                "1.0.0",
+                "old-app",
+                true,
+                Some("base"),
+                &["olddep".into()],
+            )
+            .unwrap();
             tx.record_install("olddep", "1.0.0", "old-dep", false, None, &[])
                 .unwrap();
             tx.commit().unwrap();
         }
 
         installer.upgrade("app", false, true, None).await.unwrap();
+        assert_eq!(
+            installer
+                .get_installed("app")
+                .unwrap()
+                .explicit_category
+                .as_deref(),
+            Some("base")
+        );
         assert!(
             installer
                 .db
