@@ -49,10 +49,17 @@ impl Installer {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
 
-        tx.record_install(install_name, &version, store_key, true, &[])
-            .inspect_err(|_| {
-                Self::cleanup_materialized(&self.cellar, formula_name, &version);
-            })?;
+        let dependencies = item.formula.runtime_dependencies();
+        tx.record_install(
+            install_name,
+            &version,
+            store_key,
+            item.explicit,
+            &dependencies,
+        )
+        .inspect_err(|_| {
+            Self::cleanup_materialized(&self.cellar, formula_name, &version);
+        })?;
 
         tx.commit().inspect_err(|_| {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);

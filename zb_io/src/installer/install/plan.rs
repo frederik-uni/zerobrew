@@ -17,11 +17,13 @@ impl Installer {
     ) -> Result<InstallPlan, Error> {
         let formulas = self.fetch_all_formulas(names).await?;
         let ordered = zb_core::resolve_closure(names, &formulas)?;
+        let explicit_roots: HashSet<&str> = names.iter().map(String::as_str).collect();
 
         let mut items = Vec::with_capacity(ordered.len());
         for install_name in ordered {
+            let explicit = explicit_roots.contains(install_name.as_str());
             let formula = formulas.get(&install_name).cloned().unwrap();
-            items.push(self.plan_item(install_name, formula, build_from_source)?);
+            items.push(self.plan_item(install_name, formula, build_from_source, explicit)?);
         }
 
         Ok(InstallPlan { items })
@@ -68,11 +70,18 @@ impl Installer {
         }
 
         if !valid_roots.is_empty() {
+            let explicit_roots: HashSet<&str> = valid_roots.iter().map(String::as_str).collect();
             match zb_core::resolve_closure(&valid_roots, &formulas) {
                 Ok(ordered) => {
                     for install_name in ordered {
+                        let explicit = explicit_roots.contains(install_name.as_str());
                         let formula = formulas.get(&install_name).cloned().unwrap();
-                        match self.plan_item(install_name.clone(), formula, build_from_source) {
+                        match self.plan_item(
+                            install_name.clone(),
+                            formula,
+                            build_from_source,
+                            explicit,
+                        ) {
                             Ok(item) => items.push(item),
                             Err(error) => failures.push(PlanFailure {
                                 name: install_name,
@@ -98,6 +107,7 @@ impl Installer {
         install_name: String,
         formula: Formula,
         build_from_source: bool,
+        explicit: bool,
     ) -> Result<PlannedInstall, Error> {
         let method = if build_from_source {
             match BuildPlan::from_formula(&formula, &self.prefix) {
@@ -129,6 +139,7 @@ impl Installer {
             install_name,
             formula,
             method,
+            explicit,
         })
     }
 
@@ -405,6 +416,21 @@ end
             .collect();
         assert!(planned_names.contains(&"terraform".to_string()));
         assert!(planned_names.contains(&"go".to_string()));
+        assert!(
+            plan.items
+                .iter()
+                .find(|item| item.install_name == "hashicorp/tap/terraform")
+                .unwrap()
+                .explicit
+        );
+        assert!(
+            !plan
+                .items
+                .iter()
+                .find(|item| item.install_name == "go")
+                .unwrap()
+                .explicit
+        );
     }
 
     #[tokio::test]

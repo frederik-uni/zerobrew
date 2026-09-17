@@ -59,6 +59,7 @@ pub struct PlannedInstall {
     pub install_name: String,
     pub formula: Formula,
     pub method: InstallMethod,
+    pub explicit: bool,
 }
 
 #[derive(Debug)]
@@ -597,8 +598,18 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(installer.db.get_installed("mainpkg").is_some());
-        assert!(installer.db.get_installed("deplib").is_some());
+        assert!(installer.db.get_installed("mainpkg").unwrap().explicit);
+        assert!(!installer.db.get_installed("deplib").unwrap().explicit);
+        assert_eq!(
+            installer.db.installed_dependents("deplib").unwrap(),
+            vec!["mainpkg"]
+        );
+
+        installer
+            .install(&["deplib".to_string()], true)
+            .await
+            .unwrap();
+        assert!(installer.db.get_installed("deplib").unwrap().explicit);
     }
 
     #[tokio::test]

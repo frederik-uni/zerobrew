@@ -86,7 +86,14 @@ impl Installer {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
 
-        if let Err(e) = tx.record_install(install_name, &version, &store_key, true, &[]) {
+        let dependencies = item.formula.runtime_dependencies();
+        if let Err(e) = tx.record_install(
+            install_name,
+            &version,
+            &store_key,
+            item.explicit,
+            &dependencies,
+        ) {
             drop(tx);
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
             return Err(e);
