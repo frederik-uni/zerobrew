@@ -106,6 +106,21 @@ mod tests {
         let result = Cli::try_parse_from(["zb", "outdated", "--verbose", "--json"]);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn uninstall_accepts_force() {
+        let cli = Cli::try_parse_from(["zb", "uninstall", "x264", "--force"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Uninstall { force: true, .. }
+        ));
+    }
+
+    #[test]
+    fn accepts_autoremove_command() {
+        let cli = Cli::try_parse_from(["zb", "autoremove"]).unwrap();
+        assert!(matches!(cli.command, super::Commands::Autoremove));
+    }
 }
 
 #[derive(Subcommand)]
@@ -128,9 +143,16 @@ pub enum Commands {
     Uninstall {
         #[arg(required_unless_present = "all", num_args = 1..)]
         formulas: Vec<String>,
+        #[arg(
+            long,
+            help = "Uninstall even when installed formulas depend on the target"
+        )]
+        force: bool,
         #[arg(long, help = "Uninstall all installed packages")]
         all: bool,
     },
+    /// Remove installed dependencies that are no longer required
+    Autoremove,
     /// Migrate packages from Homebrew
     Migrate {
         #[arg(long, short = 'y', help = "Skip confirmation prompts")]

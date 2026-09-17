@@ -5,6 +5,7 @@ use console::style;
 pub fn execute(
     installer: &mut zb_io::Installer,
     formulas: Vec<String>,
+    force: bool,
     all: bool,
     ui: &mut StdUi,
 ) -> Result<(), zb_core::Error> {
@@ -29,37 +30,12 @@ pub fn execute(
     ))
     .map_err(ui_error)?;
 
-    let mut errors: Vec<(String, zb_core::Error)> = Vec::new();
-
-    if formulas.len() > 1 {
-        for name in &formulas {
-            ui.step_start(name).map_err(ui_error)?;
-            match installer.uninstall(name) {
-                Ok(()) => ui.step_ok().map_err(ui_error)?,
-                Err(e) => {
-                    ui.step_fail().map_err(ui_error)?;
-                    errors.push((name.clone(), e));
-                }
-            }
-        }
-    } else if let Err(e) = installer.uninstall(&formulas[0]) {
-        errors.push((formulas[0].clone(), e));
-    }
-
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        for (name, err) in &errors {
-            ui.error(format!(
-                "Failed to uninstall {}: {}",
-                style(name).bold(),
-                err
-            ))
+    let result = installer.uninstall_many(&formulas, force || all)?;
+    for name in result.autoremoved {
+        ui.info(format!("Removed unused dependency {name}"))
             .map_err(ui_error)?;
-        }
-        // Return just the first error up. TODO: don't return errors from this fn?
-        Err(errors.remove(0).1)
     }
+    Ok(())
 }
 
 fn ui_error(err: std::io::Error) -> zb_core::Error {

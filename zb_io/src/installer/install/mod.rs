@@ -291,6 +291,12 @@ impl Installer {
         self.db.list_installed()
     }
 
+    pub fn list_installed_with_ownership(
+        &self,
+    ) -> Result<Vec<crate::storage::db::InstalledFormula>, Error> {
+        self.db.list_installed_with_ownership()
+    }
+
     pub fn keg_path(&self, name: &str, version: &str) -> PathBuf {
         self.cellar.keg_path(name, version)
     }
