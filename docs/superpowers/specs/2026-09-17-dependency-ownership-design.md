@@ -13,6 +13,7 @@ Zerobrew will persist why each formula is installed. A formula is either explici
 - Automatically remove implicit dependencies once no installed formula requires them.
 - Remove dependencies dropped by formula upgrades.
 - Explain install ownership in `zb list`.
+- Group explicit installs into optional environment-selected categories and remove a category as one dependency-safe set.
 - Migrate existing installations without risking unexpected removal.
 
 ## Non-goals
@@ -24,7 +25,7 @@ Zerobrew will persist why each formula is installed. A formula is either explici
 
 ## Persistent Data Model
 
-The database schema advances from version 1 to version 2.
+The database schema advances from version 1 to version 3.
 
 `installed_kegs` gains:
 
@@ -33,6 +34,14 @@ explicit INTEGER NOT NULL DEFAULT 1 CHECK (explicit IN (0, 1))
 ```
 
 Every row already present when migration runs receives `explicit = 1`. Zerobrew cannot reconstruct historical ownership safely, so this conservative default ensures migration never makes an existing formula eligible for automatic removal.
+
+Schema version 3 adds an optional category for explicit installs:
+
+```sql
+explicit_category TEXT NULL
+```
+
+Existing version-2 rows migrate with `explicit_category = NULL`. Implicit rows always have a null category. An explicit row with a null category is the normal uncategorized default; no warning is emitted for this state.
 
 A new table stores direct formula relationships:
 
@@ -61,13 +70,15 @@ For `zb install ffmpeg`:
 - Other formulas in the resolved closure are recorded as implicit unless they were already explicit.
 - Directly installing an already-installed implicit formula promotes it to explicit, even if its package artifacts do not otherwise need replacement.
 - An existing explicit formula is never demoted by appearing as another formula's dependency.
+- The `ZB_EXPLICIT_CATEGORY` environment variable sets the category for every explicitly requested root. A missing, empty, or whitespace-only value means uncategorized.
+- Every direct install replaces the root's previous category with the current environment value, including clearing a category when the variable is unset. Installing the same formula as a dependency does not change its category.
 - Each successfully installed formula replaces its complete set of outgoing dependency edges with the runtime dependencies in the formula metadata used for that install.
 
 The installed-keg update, explicit-state merge, and outgoing-edge replacement occur in one SQLite transaction for each successfully materialized formula. A failed formula installation does not publish its new dependency snapshot.
 
 If an installation fails after some dependencies were installed successfully, those successful rows remain accurate implicit installs. The command does not run automatic orphan cleanup after failure; a later successful operation or `zb autoremove` can remove any zero-owner remnants.
 
-Casks are recorded as explicit and have no dependency edges.
+Casks are recorded as explicit, use the same environment-selected category behavior, and have no dependency edges.
 
 ## Uninstall Semantics
 
@@ -75,13 +86,17 @@ By default, uninstall queries incoming edges from installed dependents. If any i
 
 `zb uninstall <formula> --force` bypasses this check. Incoming edges remain in the database because the still-installed parents continue to declare that dependency. The forced removal may therefore leave those parents operationally broken, which is the explicit meaning of the flag.
 
+`zb uninstall --category <name>` selects every installed explicit formula whose category exactly matches the trimmed argument. The selected roots form one removal set, so edges within the category do not block removal. Installed formulas outside the set still protect required targets unless `--force` is supplied. After removal, the normal orphan sweep removes dependencies used only by that category. An unknown category is a successful no-op with an informational message.
+
+`--category` is mutually exclusive with formula arguments and `--all`; it may be combined with `--force`.
+
 Multi-formula uninstall is evaluated as a set. Edges originating from another formula in that same requested set do not block removal. `zb uninstall --all` removes the complete installed set without requiring `--force`.
 
 After every fully successful uninstall command, Zerobrew runs the orphan sweep described below. It does not sweep after a partially failed uninstall command.
 
 ## Upgrade Semantics
 
-Upgrade preserves the upgraded formula's existing explicit state. Dependencies installed as part of the new plan remain implicit unless already explicit, and each upgraded or installed formula replaces its outgoing edge snapshot with current metadata.
+Upgrade preserves the upgraded formula's existing explicit state and category. Dependencies installed as part of the new plan remain implicit unless already explicit, and each upgraded or installed formula replaces its outgoing edge snapshot with current metadata.
 
 The old dependency snapshot remains authoritative until the replacement formula is successfully installed and its new edges are committed. A failed upgrade batch does not run orphan cleanup.
 
@@ -111,6 +126,13 @@ error: cannot uninstall 'x264'; required by: ffmpeg
 zb uninstall x264 --force
 ```
 
+Explicit categories are selected at install time and removed as a set:
+
+```text
+ZB_EXPLICIT_CATEGORY=experiment-a zb install ffmpeg imagemagick
+zb uninstall --category experiment-a
+```
+
 A new command triggers manual cleanup:
 
 ```text
@@ -121,6 +143,7 @@ zb autoremove
 
 ```text
 ffmpeg   7.1    explicit
+x265     4.1    explicit [experiment-a]
 x264     r3108  implicit (required by ffmpeg)
 openssl@3 3.5   explicit (also required by ffmpeg, wget)
 ```
@@ -128,6 +151,8 @@ openssl@3 3.5   explicit (also required by ffmpeg, wget)
 The labels are:
 
 - `explicit` when directly requested or conservatively migrated.
+- `explicit [category]` when directly requested with `ZB_EXPLICIT_CATEGORY` set.
+- `explicit [category] (also required by A, B)` when a categorized explicit formula is also a dependency.
 - `implicit (required by A, B)` for an implicit formula with installed direct dependents.
 - `explicit (also required by A, B)` when an explicit formula is also a dependency.
 - `implicit (orphan)` only if such a row is visible before a manual or automatic sweep; this makes interrupted-state diagnosis clear.
@@ -150,6 +175,8 @@ Storage tests will verify:
 - reverse-dependent queries return stable, installed dependents.
 - deleting a dependent removes its outgoing edges while forced deletion of a dependency retains incoming edges.
 - orphan discovery handles shared and recursive dependency structures.
+- v2-to-v3 migration leaves existing explicit rows uncategorized.
+- direct installs set, replace, and clear categories while dependency installs preserve them.
 
 Installer tests will verify:
 
@@ -163,7 +190,9 @@ Installer tests will verify:
 - upgrade preserves explicit state.
 - failed upgrade does not sweep based on partial state.
 - multi-target and `--all` uninstall treat requested formulas as one set.
+- upgrade preserves the explicit category.
+- category removal handles internal edges, shared dependencies, external blockers, and force.
 
-CLI tests will verify `--force` parsing, `autoremove` dispatch, protected-uninstall messaging, autoremove reporting, and the four list-output states.
+CLI tests will verify `--force` and `--category` parsing, category conflicts, environment normalization, `autoremove` dispatch, protected-uninstall messaging, category no-op reporting, autoremove reporting, and categorized/uncategorized list output.
 
 The full Rust workspace test suite and formatting checks must pass.
