@@ -64,7 +64,10 @@ zb bundle                       # install from Brewfile
 zb bundle install -f myfile     # install from custom file
 zb bundle dump                  # export installed packages to Brewfile
 zb bundle dump -f out --force   # dump to custom file (overwrite)
+zb list                         # show explicit installs and dependency ownership
 zb uninstall jq                 # uninstall one package
+zb uninstall x264 --force       # remove even when another package requires it
+zb autoremove                   # remove unused implicit dependencies
 zb outdated                     # list packages with newer versions
 zb upgrade                      # upgrade all outdated packages
 zb upgrade jq wget              # upgrade specific packages

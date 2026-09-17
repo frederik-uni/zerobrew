@@ -60,7 +60,10 @@ zb bundle                       # 从 Brewfile 安装
 zb bundle install -f myfile     # 从自定义文件安装
 zb bundle dump                  # 将已安装的软件包导出到 Brewfile
 zb bundle dump -f out --force   # 导出到自定义文件（覆盖）
+zb list                         # 显示显式安装及依赖关系
 zb uninstall jq                 # 卸载单个软件包
+zb uninstall x264 --force       # 即使其他软件包依赖它也强制删除
+zb autoremove                   # 删除不再使用的隐式依赖
 zb outdated                     # 列出有新版本可用的软件包
 zb upgrade                      # 升级所有已过期的软件包
 zb upgrade jq wget              # 升级指定的软件包

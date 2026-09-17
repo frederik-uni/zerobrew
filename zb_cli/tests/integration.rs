@@ -205,7 +205,6 @@ fn test_install_uninstall_and_reinstall() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "2\n");
 
     assert_success(&t.zb(&["uninstall", "jq"]), "zb uninstall jq");
-    assert_success(&t.zb(&["uninstall", "oniguruma"]), "zb uninstall oniguruma");
     assert!(!t.bin_dir().join("jq").exists());
     assert_no_installed_symlinks(&t.prefix());
 
@@ -232,7 +231,6 @@ fn test_list_installed_formulas() {
     assert_stdout_contains(&output, "jq");
 
     assert_success(&t.zb(&["uninstall", "jq"]), "zb uninstall jq");
-    assert_success(&t.zb(&["uninstall", "oniguruma"]), "zb uninstall oniguruma");
 
     let output = t.zb(&["list"]);
     assert_success(&output, "zb list (empty)");
@@ -272,9 +270,21 @@ fn test_gc_removes_unused_store_entries() {
     assert!(entries_before > 0);
 
     assert_success(&t.zb(&["uninstall", "jq"]), "zb uninstall jq");
-    assert_success(&t.zb(&["uninstall", "oniguruma"]), "zb uninstall oniguruma");
     assert_eq!(t.count_store_entries(), entries_before);
 
     assert_success(&t.zb(&["gc"]), "zb gc");
     assert_eq!(t.count_store_entries(), 0);
+}
+
+#[test]
+#[ignore = "integration test"]
+fn test_dependency_ownership_lifecycle() {
+    let t = TestEnv::new();
+    assert_success(&t.zb(&["install", "ffmpeg"]), "zb install ffmpeg");
+
+    let listed = t.zb(&["list"]);
+    assert_success(&listed, "zb list ownership");
+    assert_stdout_contains(&listed, "ffmpeg");
+    assert_stdout_contains(&listed, "explicit");
+    assert_stdout_contains(&listed, "implicit (required by");
 }
