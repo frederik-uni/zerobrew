@@ -9,19 +9,51 @@ pub struct ConflictedLink {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    UnsupportedBottle { name: String },
-    ChecksumMismatch { expected: String, actual: String },
-    LinkConflict { conflicts: Vec<ConflictedLink> },
-    StoreCorruption { message: String },
-    NetworkFailure { message: String },
-    MissingFormula { name: String },
-    UnsupportedTap { name: String },
-    UnsupportedFormula { name: String, reason: String },
-    DependencyCycle { cycle: Vec<String> },
-    NotInstalled { name: String },
-    FileError { message: String },
-    InvalidArgument { message: String },
-    ExecutionError { message: String },
+    UnsupportedBottle {
+        name: String,
+    },
+    ChecksumMismatch {
+        expected: String,
+        actual: String,
+    },
+    LinkConflict {
+        conflicts: Vec<ConflictedLink>,
+    },
+    StoreCorruption {
+        message: String,
+    },
+    NetworkFailure {
+        message: String,
+    },
+    MissingFormula {
+        name: String,
+    },
+    UnsupportedTap {
+        name: String,
+    },
+    UnsupportedFormula {
+        name: String,
+        reason: String,
+    },
+    DependencyCycle {
+        cycle: Vec<String>,
+    },
+    RequiredBy {
+        name: String,
+        dependents: Vec<String>,
+    },
+    NotInstalled {
+        name: String,
+    },
+    FileError {
+        message: String,
+    },
+    InvalidArgument {
+        message: String,
+    },
+    ExecutionError {
+        message: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -67,6 +99,11 @@ impl fmt::Display for Error {
                 let rendered = cycle.join(" -> ");
                 write!(f, "dependency cycle detected: {rendered}")
             }
+            Error::RequiredBy { name, dependents } => write!(
+                f,
+                "cannot uninstall '{name}'; required by: {} (use --force to remove anyway)",
+                dependents.join(", ")
+            ),
             Error::NotInstalled { name } => write!(f, "formula '{name}' is not installed"),
             Error::FileError { message } => write!(f, "file error: {message}"),
             Error::InvalidArgument { message } => write!(f, "invalid argument: {message}"),
@@ -107,5 +144,18 @@ mod tests {
         };
 
         assert!(err.to_string().contains("libheif"));
+    }
+
+    #[test]
+    fn required_by_error_names_dependents_and_force_escape_hatch() {
+        let err = Error::RequiredBy {
+            name: "x264".to_string(),
+            dependents: vec!["ffmpeg".to_string(), "vlc".to_string()],
+        };
+
+        assert_eq!(
+            err.to_string(),
+            "cannot uninstall 'x264'; required by: ffmpeg, vlc (use --force to remove anyway)"
+        );
     }
 }

@@ -8,5 +8,6 @@ pub use homebrew::{
 };
 pub use install::doctor::{DiagnosticReport, RepairSummary};
 pub use install::{
-    ExecuteResult, InstallPlan, Installer, OutdatedPackage, PlanFailure, create_installer,
+    ExecuteResult, InstallPlan, Installer, OutdatedPackage, PlanFailure, UninstallResult,
+    create_installer,
 };

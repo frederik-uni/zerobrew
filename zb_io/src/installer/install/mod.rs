@@ -77,6 +77,12 @@ pub struct ExecuteResult {
     pub installed: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct UninstallResult {
+    pub requested: Vec<String>,
+    pub autoremoved: Vec<String>,
+}
+
 /// A package that has a newer version available upstream.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OutdatedPackage {
