@@ -75,10 +75,7 @@ impl Installer {
     }
 
     pub fn uninstall_by_version(&mut self, name: &str, version: &str) -> Result<(), Error> {
-        let keg_name = formula_token(name);
-
-        let keg_path = self.cellar.keg_path(keg_name, version);
-        self.linker.unlink_keg(&keg_path)?;
+        self.remove_keg_artifacts(name, version)?;
 
         {
             let tx = self.db.transaction()?;
@@ -86,9 +83,14 @@ impl Installer {
             tx.commit()?;
         }
 
-        self.cellar.remove_keg(keg_name, version)?;
-
         Ok(())
+    }
+
+    pub(super) fn remove_keg_artifacts(&mut self, name: &str, version: &str) -> Result<(), Error> {
+        let keg_name = formula_token(name);
+        let keg_path = self.cellar.keg_path(keg_name, version);
+        self.linker.unlink_keg(&keg_path)?;
+        self.cellar.remove_keg(keg_name, version)
     }
 
     pub fn gc(&mut self) -> Result<Vec<String>, Error> {

@@ -42,18 +42,32 @@ impl Installer {
             return Ok(());
         }
 
-        let plan = self
+        let mut plan = self
             .plan_with_options(&[name.to_string()], build_from_source)
             .await?;
+        if let Some(root) = plan.items.iter_mut().find(|item| item.install_name == name) {
+            root.explicit = old.explicit;
+        }
 
         // Fetch new bottles before touching the old install — a download
         // failure here leaves the existing keg intact.
         self.prefetch_plan_bottles(&plan, progress.clone()).await?;
 
-        self.uninstall_by_version(name, &old.version)?;
+        self.remove_keg_artifacts(name, &old.version)?;
 
         // We already hold the lock, so call the no-lock variant.
-        self.execute_inner(plan, link, progress).await?;
+        if let Err(error) = self.execute_inner(plan, link, progress).await {
+            if self
+                .db
+                .get_installed(name)
+                .is_some_and(|installed| installed.version == old.version)
+            {
+                let tx = self.db.transaction()?;
+                tx.record_uninstall(name)?;
+                tx.commit()?;
+            }
+            return Err(error);
+        }
 
         Ok(())
     }
@@ -548,5 +562,96 @@ mod tests {
         assert!(target.to_string_lossy().contains("1.0.0"));
         let installed = installer.get_installed("flakypkg").unwrap();
         assert_eq!(installed.version, "1.0.0");
+    }
+
+    #[tokio::test]
+    async fn upgrade_preserves_implicit_ownership() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = get_test_bottle_tag();
+        let bottle = create_bottle_tarball_with_version("dep", "2.0.0");
+        let new_sha = sha256_hex(&bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/formula/dep.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(formula_json(
+                &mock_server.uri(),
+                "dep",
+                "2.0.0",
+                tag,
+                &new_sha,
+            )))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/bottles/dep-2.0.0.{tag}.bottle.tar.gz")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = make_installer(&root, &prefix, &mock_server.uri());
+        {
+            let tx = installer.db.transaction().unwrap();
+            tx.record_install("dep", "1.0.0", "old-sha", false, &[])
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        installer.upgrade("dep", false, true, None).await.unwrap();
+
+        let installed = installer.get_installed("dep").unwrap();
+        assert_eq!(installed.version, "2.0.0");
+        assert!(!installed.explicit);
+    }
+
+    #[tokio::test]
+    async fn upgrade_replaces_edges_and_makes_dropped_dependency_removable() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = get_test_bottle_tag();
+        let bottle = create_bottle_tarball_with_version("app", "2.0.0");
+        let new_sha = sha256_hex(&bottle);
+
+        Mock::given(method("GET"))
+            .and(path("/formula/app.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(formula_json(
+                &mock_server.uri(),
+                "app",
+                "2.0.0",
+                tag,
+                &new_sha,
+            )))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/bottles/app-2.0.0.{tag}.bottle.tar.gz")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = make_installer(&root, &prefix, &mock_server.uri());
+        {
+            let tx = installer.db.transaction().unwrap();
+            tx.record_install("app", "1.0.0", "old-app", true, &["olddep".into()])
+                .unwrap();
+            tx.record_install("olddep", "1.0.0", "old-dep", false, &[])
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        installer.upgrade("app", false, true, None).await.unwrap();
+        assert!(
+            installer
+                .db
+                .installed_dependents("olddep")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(installer.autoremove().unwrap(), vec!["olddep"]);
+        assert!(!installer.is_installed("olddep"));
     }
 }

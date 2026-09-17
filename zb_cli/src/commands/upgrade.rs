@@ -210,6 +210,14 @@ pub async fn execute(
     }
 
     if errors.is_empty() && missing.is_empty() {
+        let autoremoved = installer.autoremove()?;
+        if !autoremoved.is_empty() {
+            ui.info(format!(
+                "Removed unused dependencies: {}",
+                autoremoved.join(", ")
+            ))
+            .map_err(ui_error)?;
+        }
         ui.heading(format!(
             "Upgraded {} packages in {:.2}s",
             style(upgraded).green().bold(),
