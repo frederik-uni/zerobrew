@@ -246,7 +246,8 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("jq", "1.7.1", sha, true, &[]).unwrap();
+            tx.record_install("jq", "1.7.1", sha, true, None, &[])
+                .unwrap();
             tx.commit().unwrap();
         }
 
@@ -268,7 +269,7 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("jq", "1.7.0", "old_sha256", true, &[])
+            tx.record_install("jq", "1.7.0", "old_sha256", true, None, &[])
                 .unwrap();
             tx.commit().unwrap();
         }
@@ -304,7 +305,7 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("jq", "1.7.1", "source:jq:1.7.1", true, &[])
+            tx.record_install("jq", "1.7.1", "source:jq:1.7.1", true, None, &[])
                 .unwrap();
             tx.commit().unwrap();
         }
@@ -329,7 +330,7 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("jq", "1.6", "source:jq:1.6", true, &[])
+            tx.record_install("jq", "1.6", "source:jq:1.6", true, None, &[])
                 .unwrap();
             tx.commit().unwrap();
         }
@@ -365,9 +366,9 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("good", "1.0.0", "old_sha", true, &[])
+            tx.record_install("good", "1.0.0", "old_sha", true, None, &[])
                 .unwrap();
-            tx.record_install("bad", "1.0.0", "old_sha", true, &[])
+            tx.record_install("bad", "1.0.0", "old_sha", true, None, &[])
                 .unwrap();
             tx.commit().unwrap();
         }
@@ -398,7 +399,7 @@ mod tests {
 
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("nobottle", "1.0.0", "old_sha", true, &[])
+            tx.record_install("nobottle", "1.0.0", "old_sha", true, None, &[])
                 .unwrap();
             tx.commit().unwrap();
         }

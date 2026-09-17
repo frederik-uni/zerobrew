@@ -141,7 +141,7 @@ mod tests {
                     .iter()
                     .map(|dependency| (*dependency).to_string())
                     .collect::<Vec<_>>();
-                tx.record_install(name, "1.0.0", name, *explicit, &dependencies)
+                tx.record_install(name, "1.0.0", name, *explicit, None, &dependencies)
                     .unwrap();
             }
             tx.commit().unwrap();

@@ -55,6 +55,7 @@ impl Installer {
             &version,
             store_key,
             item.explicit,
+            None,
             &dependencies,
         )
         .inspect_err(|_| {
@@ -269,7 +270,14 @@ impl Installer {
         };
 
         let tx = self.db.transaction()?;
-        tx.record_install(&cask.install_name, &cask.version, &cask.sha256, true, &[])?;
+        tx.record_install(
+            &cask.install_name,
+            &cask.version,
+            &cask.sha256,
+            true,
+            None,
+            &[],
+        )?;
         for linked in &linked_files {
             tx.record_linked_file(
                 &cask.install_name,
@@ -511,8 +519,15 @@ mod tests {
         let db_path = tmp.path().join("zb.sqlite3");
         let mut db = Database::open(&db_path).unwrap();
         let tx = db.transaction().unwrap();
-        tx.record_install("hashicorp/tap/terraform", "1.10.0", "store-key", true, &[])
-            .unwrap();
+        tx.record_install(
+            "hashicorp/tap/terraform",
+            "1.10.0",
+            "store-key",
+            true,
+            None,
+            &[],
+        )
+        .unwrap();
         tx.commit().unwrap();
 
         let keg = db.get_installed("hashicorp/tap/terraform").unwrap();

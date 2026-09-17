@@ -92,6 +92,7 @@ impl Installer {
             &version,
             &store_key,
             item.explicit,
+            None,
             &dependencies,
         ) {
             drop(tx);

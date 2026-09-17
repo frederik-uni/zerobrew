@@ -594,7 +594,7 @@ mod tests {
         let mut installer = make_installer(&root, &prefix, &mock_server.uri());
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("dep", "1.0.0", "old-sha", false, &[])
+            tx.record_install("dep", "1.0.0", "old-sha", false, None, &[])
                 .unwrap();
             tx.commit().unwrap();
         }
@@ -636,9 +636,9 @@ mod tests {
         let mut installer = make_installer(&root, &prefix, &mock_server.uri());
         {
             let tx = installer.db.transaction().unwrap();
-            tx.record_install("app", "1.0.0", "old-app", true, &["olddep".into()])
+            tx.record_install("app", "1.0.0", "old-app", true, None, &["olddep".into()])
                 .unwrap();
-            tx.record_install("olddep", "1.0.0", "old-dep", false, &[])
+            tx.record_install("olddep", "1.0.0", "old-dep", false, None, &[])
                 .unwrap();
             tx.commit().unwrap();
         }
